@@ -8,14 +8,14 @@ import os
 # ============================================================
 # EDIT THESE THREE LINES -- put the path to each .bin file here
 # ============================================================
-SIGF_BIN_PATH = "C:/Users/pavan/Documents/CNN/Vivado/finalHW4/finalHW4.runs/child_0_impl_1/DigitDNN_i_rp_r5_inst_0_partial.bin"   # <-- path to your Sig5 .bin file
-SIGE_BIN_PATH = "C:/Users/pavan/Documents/CNN/Vivado/finalHW4/finalHW4.runs/child_1_impl_1/DigitDNN_i_rp_r8_inst_0_partial.bin"   # <-- path to your Sig8 .bin file
-SIGT_BIN_PATH = "C:/Users/pavan/Documents/CNN/Vivado/finalHW4/finalHW4.runs/impl_1/DigitDNN_i_rp_r10_inst_0_partial.bin"   # <-- path to your Sig10 .bin file
+SIGF_BIN_PATH = "" # <-- path to your Sig5 .bin file
+SIGE_BIN_PATH =  "" # <-- path to your Sig8 .bin file
+SIGT_BIN_PATH =  ""  # <-- path to your Sig10 .bin file
 
 # ============================================================
 # EDIT THIS -- folder where the generated .h files will be saved
 # ============================================================
-OUTPUT_FOLDER = "C:/Users/pavan/Documents/CNN/pyscripts"   # <-- "." means "same folder as this script"
+OUTPUT_FOLDER = ""   # <-- "." means "same folder as this script"
 
 
 def make_header(bin_path, array_name, out_path):
