@@ -1,6 +1,6 @@
-# SIGMA-Digit-Recognition-DNN-on-FPGA
+# SIGMA: SIGMA — Sigmoid Granularity Modular Accelerator. A Digit Recognition DNN on a FPGA (SoC)
 
-**SIGMA — Sigmoid Granularity Modular Accelerator.** A hardware implementation of a deep neural network that performs digit recognition based on the MNIST database using variants of the sigmoid function. It is implemented on the Arty Z7-20 board, with a Zynq-7000 SoC.
+**SIGMA** A hardware implementation of a deep neural network that performs digit recognition based on the MNIST database using variants of the sigmoid function. It is implemented on the Arty Z7-20 board, with a Zynq-7000 SoC.
 
 It includes the RTL implementation of the DNN, interfacing with the processing system (PS — Cortex-A9), firmware that runs TCP communication via LAN, and the user interface on the host side.
 
@@ -126,10 +126,22 @@ Measured on the MNIST test set, running on hardware:
 | Variant | Accuracy | LUT | FF | BRAM | DSP | Fmax |
 |---|---|---|---|---|---|---|
 | Sigmoid-5 | ~90% | 5148 | 5094 | 15 | 160 | ~179 MHz |
-| Sigmoid-8 | ~91% | — | — | — | — | — |
+| Sigmoid-8 | ~91% | 4744 | 4986 | 35 | 160 | — |
 | Sigmoid-10 | ~92% | 4740 | 5018 | 35 | 160 | ~177 MHz |
 
+All three close timing at a 5.714 ns target (175 MHz).
+
 A Sigmoid-12 variant was also built (~92.7%, 13674 LUT, 70 BRAM) but is not included here — the accuracy gain over Sigmoid-10 is small, while the resource cost roughly doubles, which is a clear case of diminishing returns.
+
+### Reading the numbers
+
+The interesting result is that **Sigmoid-8 and Sigmoid-10 use exactly the same resources** — 35 BRAM, and LUT counts within 4 of each other — while Sigmoid-10 is about a point more accurate.
+
+The reason is how block RAM is allocated. A Sigmoid-8 table is 256 entries × 16 bits = 4 Kbit, and a Sigmoid-10 table is 1024 × 16 = 16 Kbit. But BRAM comes in fixed-size blocks, and each neuron instantiates its own copy of the table, so both variants consume the same number of blocks. The smaller table simply leaves more of each block unused.
+
+So the meaningful jump is between Sigmoid-5 and Sigmoid-8: 15 BRAM to 35 BRAM buys roughly a point of accuracy. Past that, going from 8 to 10 is effectively free, and going from 10 to 12 doubles BRAM for well under a point.
+
+If you want the smallest build, Sigmoid-5 is the one to pick. If you want the most accurate build that still fits comfortably, Sigmoid-10 — there is no good reason to deploy Sigmoid-8 over it. That does not make Sigmoid-8 useless here: it is exactly the kind of result that only shows up once you build all the variants and compare them, which is what this project set out to do.
 
 > **Note on live drawing:** accuracy on hand-drawn input through the GUI is lower than the numbers above. MNIST images were preprocessed — each digit is scaled to fit a 20×20 box and shifted so its centre of mass sits at the centre of the frame. The GUI does not replicate that preprocessing, so a digit drawn off-centre or with thicker strokes looks different to the network than anything it was trained on. A fully-connected network has no translation invariance, so this matters more than it would for a CNN.
 
