@@ -27,7 +27,6 @@
  * This file is part of the lwIP TCP/IP stack.
  *
  */
-
 /*****************************************************************************
 * This file xemacpsif_physpeed.c implements functionalities to:
 * - Detect the available PHYs connected to a MAC
