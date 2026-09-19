@@ -1,4 +1,4 @@
-# SIGMA: SIGMA — Sigmoid Granularity Modular Accelerator. A Digit Recognition DNN on a FPGA (SoC)
+# SIGMA: Sigmoid Granularity Modular Accelerator. A Digit Recognition DNN on a FPGA (SoC)
 
 **SIGMA** A hardware implementation of a deep neural network that performs digit recognition based on the MNIST database using variants of the sigmoid function. It is implemented on the Arty Z7-20 board, with a Zynq-7000 SoC.
 
