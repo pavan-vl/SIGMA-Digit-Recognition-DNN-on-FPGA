@@ -126,10 +126,10 @@ Measured on the MNIST test set, running on hardware:
 | Variant | Accuracy | LUT | FF | BRAM | DSP | Fmax |
 |---|---|---|---|---|---|---|
 | Sigmoid-5 | ~90% | 5148 | 5094 | 15 | 160 | ~179 MHz |
-| Sigmoid-8 | ~91% | 4744 | 4986 | 35 | 160 | — |
+| Sigmoid-8 | ~91% | 4744 | 4986 | 35 | 160 | ~180 MHz |
 | Sigmoid-10 | ~92% | 4740 | 5018 | 35 | 160 | ~177 MHz |
 
-All three close timing at a 5.714 ns target (175 MHz).
+All three close timing at a 5.714 ns target (175 MHz), which is the frequency the design actually runs at. The Fmax column is what the positive slack implies each build could reach.
 
 A Sigmoid-12 variant was also built (~92.7%, 13674 LUT, 70 BRAM) but is not included here — the accuracy gain over Sigmoid-10 is small, while the resource cost roughly doubles, which is a clear case of diminishing returns.
 
