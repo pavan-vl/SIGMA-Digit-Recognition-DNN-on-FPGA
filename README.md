@@ -150,6 +150,32 @@ A Sigmoid-12 variant was also built (~92.7%, 13674 LUT, 70 BRAM) but is not incl
 
 ---
 
+## Status LEDs
+
+The board's two RGB LEDs show what is happening without needing the serial console, which is handy when the board is sitting next to you during a demo.
+
+**LED 1 (LD4) — network status**
+
+| Colour | Meaning |
+|---|---|
+| Red | Ethernet PHY autonegotiation failed; there is no usable link |
+| Green | Link is up and the TCP server is listening on `192.168.1.10` port `7` |
+| Blue | Link is up **and** a sigmoid variant has been loaded, so the board can actually answer a detect request |
+
+**LED 2 (LD5) — DNN status**
+
+| Colour | Meaning |
+|---|---|
+| Red | No inference has been run yet since power-up |
+| Green | An inference is in progress |
+| Blue | A digit has been predicted and sent back to the GUI |
+
+Green on LED 2 is usually only a brief flash, because the inference itself finishes quickly.
+
+The LEDs are driven straight from the AXI GPIO data register rather than through the XGpio driver, so the helper is a single header with no driver instance to share between source files. Both LEDs sit in one 6-bit GPIO channel, so each colour helper clears only its own three bits and leaves the other LED alone.
+
+---
+
 ## Build notes
 
 - **Sigmoid tables** are generated offline by a Python script and written as `.mif` files, one per variant. The generator must use the same fixed-point convention as the RTL (`weightIntWidth = 4`) or the table will be scaled wrongly and the network will produce nonsense.
