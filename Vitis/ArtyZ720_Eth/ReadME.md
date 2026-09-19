@@ -3,4 +3,4 @@ on Digilent's website.
 
 File name: xemacpsif_physpeed.c
 
-Path to include in: <Platform Component Name>\ps7_cortexa9_0\standalone_ps7_cortexa9_0\bsp\libsrc\lwip220\src\lwip-2.2.0\contrib\ports\xilinx\netif
+Path to include in: (Platform Component Name)\ps7_cortexa9_0\standalone_ps7_cortexa9_0\bsp\libsrc\lwip220\src\lwip-2.2.0\contrib\ports\xilinx\netif
