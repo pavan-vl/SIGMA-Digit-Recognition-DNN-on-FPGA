@@ -1,6 +1,6 @@
-# SIGMA: Sigmoid Granularity Modular Accelerator. A Digit Recognition DNN on a FPGA (SoC)
+# SIGMA-Digit-Recognition-DNN-on-FPGA
 
-**SIGMA** A hardware implementation of a deep neural network that performs digit recognition based on the MNIST database using variants of the sigmoid function. It is implemented on the Arty Z7-20 board, with a Zynq-7000 SoC.
+**SIGMA — Sigmoid Granularity Modular Accelerator.** A hardware implementation of a deep neural network that performs digit recognition based on the MNIST database using variants of the sigmoid function. It is implemented on the Arty Z7-20 board, with a Zynq-7000 SoC.
 
 It includes the RTL implementation of the DNN, interfacing with the processing system (PS — Cortex-A9), firmware that runs TCP communication via LAN, and the user interface on the host side.
 
@@ -8,9 +8,16 @@ The overall architecture allows the user to pick between three different variant
 
 These variants can be loaded during run time using the DFX (Dynamic Function eXchange) capability of the SoC. The user is allowed to switch the variants as many times as they please before drawing the digit and starting the DNN.
 
+https://github.com/pavan-vl/SIGMA-Digit-Recognition-DNN-on-FPGA/raw/main/docs/Screen_Recording.mp4
+
 ---
 
 ## How the whole thing works
+
+<p align="center">
+  <img src="docs/Block_Design.png" width="900" alt="Vivado block design">
+</p>
+
 
 At a high level, there are three pieces that talk to each other:
 
@@ -51,6 +58,11 @@ TCP is a stream, not a set of neat messages, so those 1569 bytes usually arrive 
 Once the full frame is in, the firmware rebuilds the 784 16-bit pixel values and hands them to the AXI DMA, which streams them into the DNN over **AXI4-Stream**, one pixel per clock.
 
 ### 5. The DNN computes the answer in hardware
+
+<p align="center">
+  <img src="docs/Implementation.png" width="900" alt="Implemented design">
+</p>
+
 
 The network is fully connected with four layers:
 
