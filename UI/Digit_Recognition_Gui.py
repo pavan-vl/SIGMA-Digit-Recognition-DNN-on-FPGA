@@ -1,52 +1,5 @@
-"""
-Digit_Recognition_Gui.py
-
-A Tkinter front-end for the DFX-reconfigurable MNIST DNN.
-
-WHAT THIS SCRIPT DOES, IN PLAIN WORDS
---------------------------------------
-- Shows three buttons (sigmoid-5 / sigmoid-8 / sigmoid-10). Clicking one
-  sends a short "magic" command over TCP telling the board to
-  partial-reconfigure (devcfg/PCAP) into that variant. The board is
-  expected to echo the same command back once the swap is done -- only
-  THEN do we update the "VARIANT SELECTED" box, so the UI always shows
-  what the board actually confirmed, not just what we clicked.
-
-- Shows a 28x28 drawing grid. You draw a digit on it with the mouse.
-  Each cell remembers a brightness from 0 (black/background) to 255
-  (full white ink), same as a real MNIST pixel.
-
-- "Detect" converts the 28x28 grid into the same fixed-point format the
-  DNN's training data used (Q1.15, i.e. brightness*128 -- see the big
-  comment near PIXEL_SCALE below for why), sends it to the board with a
-  leading command byte, and waits for the board to send back the
-  digit it recognised.
-
-- "Reset" just clears the drawing grid back to all-black.
-
-WHY EVERYTHING NETWORK-RELATED RUNS ON A BACKGROUND THREAD
-------------------------------------------------------------
-Tkinter is not thread-safe -- you're only allowed to touch widgets from
-the same thread that's running root.mainloop(). But socket.recv() can
-block for a long time (or forever, if the board never replies), and if
-that call happens on the main thread, the whole window freezes -- which
-is exactly the hang you described in your earlier version.
-
-The fix used here: every button press starts a small background thread
-that does the slow networking. When that thread has an answer (or an
-error), it doesn't touch the UI directly -- it just drops a message
-into a thread-safe queue.Queue(). The main thread checks that queue
-every 100ms (via root.after(...)) and only THEN updates labels/buttons.
-This is the standard, safe way to mix threads with Tkinter.
-
-TESTING WITHOUT THE BOARD
---------------------------
-Set DEMO_MODE = True below to try the whole UI without any hardware
-connected. In demo mode, "sending" a variant or a detect request just
-waits half a second and then fakes a plausible reply, so you can check
-that all the widgets, colours, and threading behave correctly before
-you ever touch the real board.
-"""
+# digit_recognition_gui.py
+# Tkinter front-end for the DFX-reconfigurable MNIST DNN on the Arty Z7-20.
 
 import tkinter as tk
 import socket
@@ -57,134 +10,78 @@ import time
 import random
 
 # ============================================================================
-# CONFIGURATION -- the things you're most likely to need to change
+# CONFIGURATION
 # ============================================================================
 
-# Set this True to click around the UI with no board attached at all.
-# Every "network" action will just fake a response after a short delay.
-DEMO_MODE = False
+DEMO_MODE = False           # True = fake replies, no board needed
 
-# Where the board's TCP server is listening. Change to match your setup
-# (this matches the static IP printed by your lwIP example earlier).
 DEVICE_IP = "192.168.1.10"
 DEVICE_PORT = 7
+NETWORK_TIMEOUT = 5.0       # seconds to wait for a reply
 
-# How long (seconds) we'll wait for the board to reply before giving up.
-NETWORK_TIMEOUT = 5.0
-
-# --- Variant-switch protocol -------------------------------------------
-# Sending a variant command means: write these 3 raw bytes to the socket.
-# 0xFA 0xCE is just a fixed "this is a variant-select command" marker,
-# and the third byte says which variant. We read 3 bytes back afterward
-# and only accept it as confirmation if they match exactly what we sent
-# -- that's what "it will be echoed back using lwIP" means in practice.
+# Variant select: 0xFA 0xCE <code>, echoed back by the board as confirmation
 VARIANT_CODES = {
     "sigmoid-5":  0x05,
     "sigmoid-8":  0x08,
     "sigmoid-10": 0x0A,
 }
-VARIANT_MAGIC_PREFIX = bytes([0xFA, 0xCE])   # the fixed first two bytes
-VARIANT_RESPONSE_BYTES = 3                    # we expect all 3 bytes echoed back
+VARIANT_MAGIC_PREFIX = bytes([0xFA, 0xCE])
+VARIANT_RESPONSE_BYTES = 3
 
-# --- Detect protocol -----------------------------------------------------
-# Sending a detect request means: one command byte (0xDA), then 784
-# pixels as 16-bit values, low-byte-first (Zynq/ARM is little-endian,
-# so this must match however your firmware unpacks the stream).
+# Detect: 0xDA + 784 pixels as 16-bit little-endian = 1569 bytes
 DETECT_COMMAND_BYTE = 0xDA
 NUM_PIXELS = 28 * 28
 
-
-
-
-
-# =====================================================================
-# ===================== CHANGED SECTION (1 of 2) ======================
-# =====================================================================
-#
-# The board echoes every chunk of the pixel data back as it arrives,
-# so the detect reply is NOT simply "the first byte that comes back".
-# Instead the firmware marks the real answer with a 3-byte header:
-#
-#       0xDE 0xED 0xAF <digit>
-#
-# So we read the incoming stream until we spot those three bytes, and
-# take the very next byte as the predicted digit. Everything arriving
-# before the marker is just echoed pixel data and gets discarded.
+# Board tags the real answer with this header, since the pixel data is echoed back too
 DETECT_RESULT_MARKER = bytes([0xDE, 0xED, 0xAF])
-#
-# =====================================================================
-# =================== END CHANGED SECTION (1 of 2) ====================
-# =====================================================================
 
-
-
-
-# --- Pixel scaling: turning a 0-255 brush stroke into Q1.15 -------------
-# Your DNN expects pixels in Q1.15 fixed point (1 sign/integer bit +
-# 15 fractional bits). We already confirmed from real training data
-# (test_data_0001.txt) that a fully-white pixel (255) was encoded as
-# 32640, and 255 * 128 = 32640 exactly. So the conversion is just:
-#
-#       q15_value = brightness_0_to_255 * 128
-#
-# which is what PIXEL_SCALE is used for below.
-PIXEL_SCALE = 128
+PIXEL_SCALE = 128           # 0-255 brightness -> Q1.15 (255 * 128 = 32640)
 
 # ============================================================================
-# COLOURS -- picked to match the dark "Digit Recognition Tool" design
+# COLOURS
 # ============================================================================
 
-COL_BG          = "#0b0f19"   # main window background
-COL_PANEL       = "#141a29"   # card/panel background
-COL_PANEL_EDGE  = "#232b3d"   # card border colour
-COL_TEXT        = "#e5e7eb"   # normal light text
-COL_TEXT_DIM    = "#8b93a7"   # dimmer secondary text
-COL_ACCENT      = "#3b82f6"   # the blue used for selection/primary button
-COL_ACCENT_DARK = "#1d4ed8"   # pressed/darker blue
-COL_BTN_IDLE    = "#1b2536"   # unselected variant button colour
-COL_GRID_BG     = "#0d1420"   # drawing canvas background (black-ish)
-COL_GRID_LINE   = "#1f2937"   # faint grid lines on the canvas
-COL_DANGER      = "#3a2330"   # reset button background (muted red-ish)
+COL_BG          = "#0b0f19"   # window background
+COL_PANEL       = "#141a29"   # card background
+COL_PANEL_EDGE  = "#232b3d"   # card border
+COL_TEXT        = "#e5e7eb"   # normal text
+COL_TEXT_DIM    = "#8b93a7"   # secondary text
+COL_ACCENT      = "#3b82f6"   # selection / primary button
+COL_ACCENT_DARK = "#1d4ed8"   # pressed blue
+COL_BTN_IDLE    = "#1b2536"   # unselected variant button
+COL_GRID_BG     = "#0d1420"   # canvas background
+COL_GRID_LINE   = "#1f2937"   # grid lines
+COL_DANGER      = "#3a2330"   # reset button
 COL_DANGER_EDGE = "#5b2b3a"
 
 
 # ============================================================================
-# NETWORK HELPERS
+# NETWORK
 # ============================================================================
 
 def recv_exact(sock, num_bytes):
-    """
-    Plain socket.recv() is allowed to hand back fewer bytes than you
-    asked for (TCP is a stream, not a set of neat little packets). This
-    keeps calling recv() in a loop until we actually have num_bytes, or
-    the connection closes / times out. Returns None if we couldn't get
-    the full amount.
-    """
+    # TCP is a stream, so recv() can return short. Loop until we have it all.
     data = b""
     while len(data) < num_bytes:
         chunk = sock.recv(num_bytes - len(data))
         if not chunk:
-            # Peer closed the connection before sending everything.
             return None
         data += chunk
     return data
 
 
 def send_variant_command(variant_name):
-    """
-    Runs on a BACKGROUND THREAD (see App._start_variant_request).
-    Connects, sends the 3-byte variant command, waits for the echoed
-    reply, and returns (success, info_string).
-    """
+    # Runs on a background thread. Returns (success, info_string).
+
+    # Step 1: build the 3-byte command
     code = VARIANT_CODES[variant_name]
     payload = VARIANT_MAGIC_PREFIX + bytes([code])
 
     if DEMO_MODE:
-        # Pretend this took some time and then "confirm" it, so you can
-        # see the whole flow working without any real hardware.
         time.sleep(0.5)
         return True, "(demo) confirmed " + variant_name
 
+    # Step 2: send it and wait for the echo
     try:
         with socket.create_connection((DEVICE_IP, DEVICE_PORT), timeout=NETWORK_TIMEOUT) as sock:
             sock.settimeout(NETWORK_TIMEOUT)
@@ -193,129 +90,86 @@ def send_variant_command(variant_name):
     except (socket.timeout, OSError) as exc:
         return False, "connection error: %s" % exc
 
+    # Step 3: only accept it if the echo matches exactly
     if reply is None:
-        
         return False, "board closed connection before replying"
     if reply != payload:
-        
         return False, "unexpected echo: %r" % (reply,)
 
     return True, "confirmed " + variant_name
 
 
 def send_detect_request(pixel_grid_0_to_255):
-    """
-    Runs on a BACKGROUND THREAD (see App._start_detect_request).
+    # Runs on a background thread. Returns (success, digit_or_error).
 
-    pixel_grid_0_to_255 is a 28x28 list of ints, each 0-255, in the
-    same row-major order as the training .txt files (row 0 first,
-    left-to-right within each row).
-
-    Returns (success, digit_or_error_message).
-    """
-    # Flatten the 28x28 grid into one 784-long list, then scale each
-    # value from plain 0-255 brightness into Q1.15 fixed point.
+    # Step 1: flatten the 28x28 grid and scale each pixel to Q1.15
     flat_pixels = []
     for row in pixel_grid_0_to_255:
         for brightness in row:
             flat_pixels.append(brightness * PIXEL_SCALE)
 
-    # Build the exact byte layout the board expects:
-    #   [ 0xDA ][ pixel0 low, pixel0 high ][ pixel1 low, pixel1 high ]...
-    # "<784H" means "little-endian, 784 unsigned 16-bit values".
+    # Step 2: build the packet - command byte then 784 little-endian 16-bit pixels
     payload = bytes([DETECT_COMMAND_BYTE]) + struct.pack("<%dH" % NUM_PIXELS, *flat_pixels)
 
     if DEMO_MODE:
         time.sleep(0.5)
-        return True, random.randint(0, 9)   # fake a plausible digit
+        return True, random.randint(0, 9)
 
-
-
-
-    # =================================================================
-    # ==================== CHANGED SECTION (2 of 2) ===================
-    # =================================================================
-    #
-    # Old behaviour: read exactly 1 byte and call it the digit.
-    # That breaks now, because the board echoes the pixel data back
-    # first -- the first byte to arrive is echoed pixel data, not the
-    # answer.
-    #
-    # New behaviour: keep reading until the 0xDEEDAF marker shows up,
-    # then take the byte straight after it. Everything before the
-    # marker is discarded as echo.
     try:
         with socket.create_connection((DEVICE_IP, DEVICE_PORT), timeout=NETWORK_TIMEOUT) as sock:
             sock.settimeout(NETWORK_TIMEOUT)
+
+            # Step 3: send the frame
             sock.sendall(payload)
 
             buf = b""
             digit = None
 
+            # Step 4: read until the 0xDEEDAF marker shows up
             while True:
                 chunk = sock.recv(4096)
                 if not chunk:
-                    # Board closed the connection. If the marker never
-                    # arrived, there's nothing more coming.
                     break
 
                 buf += chunk
 
+                # Step 4.1: marker found - the digit is the byte right after it
                 idx = buf.find(DETECT_RESULT_MARKER)
                 if idx != -1:
-                    # Marker found. The digit is the next byte after it --
-                    # but that byte may not have arrived yet, so only
-                    # take it once the buffer is actually long enough.
                     digit_pos = idx + len(DETECT_RESULT_MARKER)
                     if len(buf) > digit_pos:
                         digit = buf[digit_pos]
                         break
 
-                # Guard against the buffer growing without bound if the
-                # marker never turns up (e.g. firmware mismatch). The
-                # echo is ~1569 bytes, so this is a generous ceiling.
+                # Step 4.2: bail out if the marker never turns up
                 if len(buf) > 8192:
                     return False, "no 0xDEEDAF marker in reply"
 
-            # ---- DRAIN ----
-            # We have the digit, but the board is still echoing the rest
-            # of the pixel data back at us. If we just close now, that
-            # data sits unread in the board's send buffer, holding lwIP
-            # pbufs and the PCB. Do that a couple of times and the board
-            # runs out and stops answering new connections entirely.
-            # So keep reading and throwing the remainder away until the
-            # board closes or goes quiet. A short timeout is used here
-            # so a chatty board can't stall the UI thread.
+            # Step 5: drain the leftover echo so the board can free its pbufs
             if digit is not None:
                 sock.settimeout(0.5)
                 try:
                     while True:
                         leftover = sock.recv(4096)
                         if not leftover:
-                            break          # board closed -- all drained
+                            break
                 except (socket.timeout, OSError):
-                    pass                   # nothing more coming; fine
+                    pass
 
     except (socket.timeout, OSError) as exc:
         return False, "connection error: %s" % exc
 
+    # Step 6: sanity check the result
     if digit is None:
         return False, "board closed connection before sending a result"
-
     if not (0 <= digit <= 9):
         return False, "got out-of-range digit: %d" % digit
 
     return True, digit
-    #
-    # =================================================================
-    # ================== END CHANGED SECTION (2 of 2) =================
-    # =================================================================
-
-
 
 
 # ============================================================================
-# THE MAIN APPLICATION
+# APPLICATION
 # ============================================================================
 
 class DigitRecognitionApp:
@@ -325,30 +179,24 @@ class DigitRecognitionApp:
         self.root.title("Digit Recognition Tool")
         self.root.configure(bg=COL_BG)
 
-        # ------------------------------------------------------------
-        # Drawing-grid state. This is the "source of truth" for what's
-        # been drawn -- the canvas rectangles are just a picture of it.
-        # ------------------------------------------------------------
+        # Step 1: drawing state - pixel_grid is the source of truth, canvas just shows it
         self.grid_size = 28
-        self.cell_px = 20   # each grid cell is drawn this many screen pixels wide
+        self.cell_px = 20
         self.pixel_grid = [[0] * self.grid_size for _ in range(self.grid_size)]
-        self.cell_rect_ids = {}   # (row, col) -> canvas rectangle id, for fast redraws
+        self.cell_rect_ids = {}
 
-        # Which variant the BOARD has actually confirmed (not just clicked).
+        # Step 2: what the board has actually confirmed, not just what was clicked
         self.confirmed_variant = None
 
-        # Prevents you from mashing buttons while a request is already
-        # in flight -- avoids piling up sockets/threads needlessly.
+        # Step 3: blocks new requests while one is already in flight
         self.request_in_progress = False
 
-        # This is how background threads hand results back to the main
-        # thread safely. See _poll_queue() for the receiving end.
+        # Step 4: how background threads hand results back to the UI thread
         self.result_queue = queue.Queue()
 
         self._build_ui()
 
-        # Start the queue-polling loop. This is what makes the thread ->
-        # UI handoff safe; see the big comment at the top of the file.
+        # Step 5: start the queue poll - this is what keeps Tkinter thread-safe
         self.root.after(100, self._poll_queue)
 
     # ------------------------------------------------------------------
@@ -356,7 +204,7 @@ class DigitRecognitionApp:
     # ------------------------------------------------------------------
 
     def _build_ui(self):
-        # ---- Header ----------------------------------------------------
+        # Step 1: header
         header = tk.Frame(self.root, bg=COL_BG)
         header.pack(fill="x", pady=(18, 6))
 
@@ -369,7 +217,7 @@ class DigitRecognitionApp:
             font=("Segoe UI", 10), fg=COL_TEXT_DIM, bg=COL_BG,
         ).pack(pady=(2, 0))
 
-        # ---- Body: three columns side by side --------------------------
+        # Step 2: three columns side by side
         body = tk.Frame(self.root, bg=COL_BG)
         body.pack(fill="both", expand=True, padx=20, pady=10)
 
@@ -377,7 +225,7 @@ class DigitRecognitionApp:
         self._build_center_panel(body)
         self._build_right_panel(body)
 
-        # ---- Status bar at the very bottom ------------------------------
+        # Step 3: status bar
         self.status_var = tk.StringVar(value="Ready." + ("  [DEMO MODE]" if DEMO_MODE else ""))
         status = tk.Label(
             self.root, textvariable=self.status_var,
@@ -386,12 +234,7 @@ class DigitRecognitionApp:
         status.pack(fill="x", padx=20, pady=(0, 10))
 
     def _panel(self, parent, title):
-        """
-        Small helper: builds one of the rounded-look "card" boxes used
-        throughout the design (a bordered frame with a title label on
-        top). Returns (outer_frame, inner_frame) -- put your content
-        into inner_frame.
-        """
+        # Builds one titled card. Returns (outer, inner) - put content in inner.
         outer = tk.Frame(parent, bg=COL_PANEL, highlightbackground=COL_PANEL_EDGE,
                           highlightthickness=1, bd=0)
         tk.Label(
@@ -407,7 +250,7 @@ class DigitRecognitionApp:
         left.pack(side="left", fill="y", padx=(0, 14))
         left.pack_propagate(False)
 
-        # --- "SELECT VARIANT" card with the three buttons ---
+        # Step 1: the three variant buttons
         variant_card, variant_inner = self._panel(left, "SELECT VARIANT")
         variant_card.pack(fill="x", pady=(0, 14))
 
@@ -422,7 +265,7 @@ class DigitRecognitionApp:
             btn.pack(fill="x", pady=5)
             self.variant_buttons[name] = btn
 
-        # --- "VARIANT SELECTED" card, showing the BOARD-CONFIRMED variant ---
+        # Step 2: box showing the board-confirmed variant
         selected_card, selected_inner = self._panel(left, "VARIANT SELECTED")
         selected_card.pack(fill="x")
 
@@ -440,6 +283,7 @@ class DigitRecognitionApp:
         card, inner = self._panel(center, "DRAW DIGIT (28x28 GRID)")
         card.pack(fill="both", expand=True)
 
+        # Step 1: the drawing canvas
         canvas_size = self.grid_size * self.cell_px
         self.canvas = tk.Canvas(
             inner, width=canvas_size, height=canvas_size,
@@ -447,9 +291,7 @@ class DigitRecognitionApp:
         )
         self.canvas.pack(pady=(4, 14))
 
-        # Pre-create one rectangle per cell so drawing is just "recolour
-        # an existing rectangle" -- much faster than redrawing everything
-        # on every mouse-move event.
+        # Step 2: pre-create one rectangle per cell so painting is just a recolour
         for row in range(self.grid_size):
             for col in range(self.grid_size):
                 x0 = col * self.cell_px
@@ -460,11 +302,11 @@ class DigitRecognitionApp:
                 )
                 self.cell_rect_ids[(row, col)] = rect_id
 
-        # Left mouse button drag = paint.
+        # Step 3: left-click and drag paints
         self.canvas.bind("<Button-1>", self._on_canvas_paint)
         self.canvas.bind("<B1-Motion>", self._on_canvas_paint)
 
-        # --- Detect / Reset buttons, side by side under the grid ---
+        # Step 4: Detect and Reset buttons
         button_row = tk.Frame(inner, bg=COL_PANEL)
         button_row.pack()
 
@@ -510,22 +352,20 @@ class DigitRecognitionApp:
     # ------------------------------------------------------------------
 
     def _on_canvas_paint(self, event):
+        # Step 1: which cell is under the cursor
         col = event.x // self.cell_px
         row = event.y // self.cell_px
         if not (0 <= row < self.grid_size and 0 <= col < self.grid_size):
-            return   # mouse is outside the grid (e.g. right at the edge)
+            return
 
-        # A small soft brush: the cell under the cursor gets full
-        # brightness, and its immediate neighbours get a bit of
-        # brightness too, so strokes look like a real pen mark instead
-        # of a single hard-edged square. We use "only increase" logic
-        # rather than overwriting, so drawing back over an
-        # already-bright area never makes it dimmer.
+        # Step 2: soft 3x3 brush so strokes have gradient edges like real MNIST
         brush = {
             (0, 0): 255,
             (-1, 0): 140, (1, 0): 140, (0, -1): 140, (0, 1): 140,
             (-1, -1): 70, (-1, 1): 70, (1, -1): 70, (1, 1): 70,
         }
+
+        # Step 3: only ever brighten a cell, never dim it
         for (dr, dc), brightness in brush.items():
             r, c = row + dr, col + dc
             if 0 <= r < self.grid_size and 0 <= c < self.grid_size:
@@ -534,48 +374,50 @@ class DigitRecognitionApp:
                     self._redraw_cell(r, c)
 
     def _redraw_cell(self, row, col):
+        # Brightness 0-255 becomes a grey hex colour
         brightness = self.pixel_grid[row][col]
-        # A brightness of 0-255 becomes a grayscale hex colour like
-        # "#8a8a8a" -- equal red/green/blue channels give plain gray.
         hex_val = "#%02x%02x%02x" % (brightness, brightness, brightness)
         self.canvas.itemconfig(self.cell_rect_ids[(row, col)], fill=hex_val)
 
     def _on_reset_clicked(self):
+        # Step 1: clear every cell
         for row in range(self.grid_size):
             for col in range(self.grid_size):
                 self.pixel_grid[row][col] = 0
                 self.canvas.itemconfig(self.cell_rect_ids[(row, col)], fill=COL_GRID_BG)
+
+        # Step 2: reset the prediction display
         self.prediction_var.set("?")
         self.prediction_label.configure(fg=COL_TEXT_DIM)
         self.prediction_hint_var.set("Digit will appear here")
         self.status_var.set("Cleared.")
 
     # ------------------------------------------------------------------
-    # VARIANT SELECTION (network action #1)
+    # VARIANT SELECTION
     # ------------------------------------------------------------------
 
     def _on_variant_clicked(self, variant_name):
         if self.request_in_progress:
-            return   # ignore clicks while something else is already in flight
+            return
 
+        # Step 1: lock the UI while the request is out
         self.request_in_progress = True
         self._set_buttons_enabled(False)
         self.status_var.set("Requesting %s ... (waiting for board)" % variant_name)
 
-        # The actual network call happens on a background thread so the
-        # window doesn't freeze while we wait for a reply.
+        # Step 2: do the networking on a background thread, hand the result back via the queue
         def worker():
             success, info = send_variant_command(variant_name)
-            # Don't touch any widgets here -- we're on the wrong thread!
-            # Just hand the result to the main thread via the queue.
             self.result_queue.put(("variant", variant_name, success, info))
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _handle_variant_result(self, variant_name, success, info):
+        # Step 1: unlock the UI
         self.request_in_progress = False
         self._set_buttons_enabled(True)
 
+        # Step 2: only update the display if the board confirmed it
         if success:
             self.confirmed_variant = variant_name
             self.variant_selected_var.set(variant_name)
@@ -592,22 +434,22 @@ class DigitRecognitionApp:
                 btn.configure(bg=COL_BTN_IDLE)
 
     # ------------------------------------------------------------------
-    # DETECT (network action #2)
+    # DETECT
     # ------------------------------------------------------------------
 
     def _on_detect_clicked(self):
         if self.request_in_progress:
             return
 
+        # Step 1: lock the UI
         self.request_in_progress = True
         self._set_buttons_enabled(False)
         self.status_var.set("Sending drawing to board ...")
 
-        # Copy the grid now (on the main thread, where it's safe to read
-        # self.pixel_grid) so the background thread has its own snapshot
-        # and there's no risk of it changing mid-send if you keep drawing.
+        # Step 2: snapshot the grid so the worker has its own copy
         grid_snapshot = [row[:] for row in self.pixel_grid]
 
+        # Step 3: send it on a background thread
         def worker():
             success, result = send_detect_request(grid_snapshot)
             self.result_queue.put(("detect", None, success, result))
@@ -615,30 +457,29 @@ class DigitRecognitionApp:
         threading.Thread(target=worker, daemon=True).start()
 
     def _handle_detect_result(self, success, result):
+        # Step 1: unlock the UI
         self.request_in_progress = False
         self._set_buttons_enabled(True)
 
+        # Step 2: show the digit
         if success:
             digit = result
             self.prediction_var.set(str(digit))
-            self.prediction_label.configure(fg=COL_ACCENT)   # make it stand out now
+            self.prediction_label.configure(fg=COL_ACCENT)
             self.prediction_hint_var.set("Detected digit")
             self.status_var.set("Detected: %s" % digit)
         else:
             self.status_var.set("Detect failed: %s" % result)
 
     # ------------------------------------------------------------------
-    # QUEUE POLLING -- the thread-safe handoff point
+    # QUEUE POLLING
     # ------------------------------------------------------------------
 
     def _poll_queue(self):
-        """
-        Runs on the MAIN thread, on a timer (every 100ms). This is the
-        only place background-thread results are turned into widget
-        updates, which is what keeps this safe with Tkinter.
-        """
+        # Runs on the main thread every 100ms. Only place widgets get updated
+        # from background results, which is what keeps Tkinter safe.
         try:
-            while True:   # drain everything currently waiting
+            while True:
                 kind, name, success, data = self.result_queue.get_nowait()
                 if kind == "variant":
                     self._handle_variant_result(name, success, data)
@@ -647,12 +488,10 @@ class DigitRecognitionApp:
         except queue.Empty:
             pass
 
-        # Reschedule ourselves. This is what makes it a loop without
-        # ever blocking the UI thread.
         self.root.after(100, self._poll_queue)
 
     # ------------------------------------------------------------------
-    # SMALL HELPERS
+    # HELPERS
     # ------------------------------------------------------------------
 
     def _set_buttons_enabled(self, enabled):
